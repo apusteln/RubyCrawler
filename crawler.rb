@@ -22,12 +22,14 @@ end
 
 def get_details(product)
     link = "https://www.amazon.pl" + product.at_css('a.a-link-normal.s-underline-text.s-underline-link-text.s-link-style.a-text-normal')["href"]
-    doc = Nokogiri::HTML(URI.open(link, "User-Agent" => "").read)
+    doc = with_retries(2) { Nokogiri::HTML(URI.open(link, "User-Agent" => "").read) }
     details = doc.css('div#feature-bullets.a-section.a-spacing-medium.a-spacing-top-small').text.strip
     return details, link
 end
 
 def save_to_db(items, file_name="database.db")
+    write_all_products = true
+    
     
     if(File.file?(file_name))
         puts "Plik " + file_name + " już istnieje"
@@ -70,7 +72,7 @@ def save_to_db(items, file_name="database.db")
         end
     end
     
-    puts "Plik bazy danych '" + file_name + " zostanie utworzony w folderze " + Dir.pwd
+    puts "Plik bazy danych '" + file_name + "' zostanie utworzony w folderze " + Dir.pwd
     
     db = Sequel.sqlite(file_name)
     db.create_table :items do
@@ -83,17 +85,48 @@ def save_to_db(items, file_name="database.db")
         String :link, null: false
     end
     table = db[:items]
-    for item in items
-        table.insert(nazwa: item[0], cena: item[1], recenzje: item[2][0], ilość_recenzji: item[2][1], informacje: item[3][0], link: item[3][1])
+    if items.count > 0
+        if items.count <= 30
+            puts "Wypisywanie skróconych nazw produktów: "
+            puts ""
+        else
+            puts "Wypisywanie skróconych nazw pierwszych 30 produktów: "
+            puts ""
+        end
     end
+    it_id = 0
+    for item in items
+        table.insert(nazwa: item[0], cena: item[1], recenzje: item[2], ilość_recenzji: item[3], informacje: item[4], link: item[5])
+        if it_id < 30
+            if item[0].length > 50
+                puts item[0][0, 50] + "..."
+            else
+                puts item[0]
+            end
+        end
+        it_id = it_id + 1
+    end
+    puts ""
     puts "Ilość znalezionych i zapisanych pozycji: #{table.count}"
 end
 
+def with_retries(num_retries=2)
+    yield
+rescue Errno::ETIMEDOUT
+    puts "Wystąpił timeout do amazon.pl"
+    puts "Pozostałe próby: " + String(num_retries)
+    (num_retries-=1) < 1 ? raise : retry
+end
+
 def main_crawler
-    puts "Przeglądasz amazon.pl, proszę podać szukane frazy:"
-    user_input = gets.chomp.strip.split.join("+")
+    puts "Przeglądasz amazon.pl, proszę podać szukane frazy (bez polskich znaków): "
+    user_input = gets.chomp.strip.split.join("+") rescue false
+    while not user_input
+        puts "Hasła nie mogą zawierać polskich znaków, proszę wpisać ponownie: "
+        user_input = gets.chomp.strip.split.join("+") rescue false
+    end
     puts "Wprowadzone frazy: " + user_input
-    puts "Ile produktów chcesz zczytać? (Więcej niż 50 może powodować timeout)"
+    puts "Ile produktów chcesz zczytać? (Więcej niż 10 może powodować timeout)"
     search_count = gets.chomp
     search_count = Integer(search_count) rescue false
     while not search_count
@@ -102,18 +135,19 @@ def main_crawler
         search_count = Integer(search_count) rescue false
     end
     url = "https://www.amazon.pl/s?k=" + user_input
-    doc = Nokogiri::HTML(URI.open(url, "User-Agent" => "").read) #no user agent needed for amazon?
+    doc = with_retries(2) { Nokogiri::HTML(URI.open(url, "User-Agent" => "").read) } #no user agent needed for amazon?
     products = doc.css('div.a-section.a-spacing-small.s-padding-left-small.s-padding-right-small')
     items = []
     while true
         for product in products
             product_name = get_name(product)
-            if product_name.strip.end_with?("Prześlij opinię na temat reklamy" or product_name.strip.end_with?("Prześlij opinię na temat reklamy." or product_name.strip.end_with?("produkt pasuje do Twojego zapytania."
+            if product_name.strip.end_with?("opinię na temat reklamy") or product_name.strip.end_with?("opinię na temat reklamy.") or product_name.strip.end_with?("produkt pasuje do Twojego zapytania.")
                 next
             end
             phrase_to_remove = "opinię na temat reklamy"
             if product_name.include?(phrase_to_remove)
-                product_name.gsub!(/.*?(?=@#{phrase_to_remove})/im, "").lstrip
+                product_name.gsub!(/.*?(?=@#{phrase_to_remove})/im, "")
+                product_name = product_name.lstrip
             end
         
             product_price = get_price(product)
@@ -121,7 +155,8 @@ def main_crawler
             product_score, product_num_reviews = get_score(product)
             phrase_to_remove = "opinię na temat reklamy"
             if product_score.include?(phrase_to_remove)
-                product_score.gsub!(/.*?(?=@#{phrase_to_remove})/im, "").lstrip
+                product_score.gsub!(/.*?(?=@#{phrase_to_remove})/im, "")
+                product_score = product_score.lstrip
             end
             
             product_details, product_link = get_details(product)
@@ -129,15 +164,14 @@ def main_crawler
             items.append([product_name, product_price, product_score, product_num_reviews, product_details, product_link])
             
             if items.length >= search_count
-                save_to_db(items)
-                return
+                break
             end
         end
-        if doc.at_css('a:contains("Dalej")') == nil
+        if doc.at_css('a:contains("Dalej")') == nil or items.length >= search_count
             break
         else
             url = "https://www.amazon.pl" + doc.at_css('a:contains("Dalej")')["href"]
-            doc = Nokogiri::HTML(URI.open(url, "User-Agent" => "").read)
+            doc = with_retries(2) { Nokogiri::HTML(URI.open(url, "User-Agent" => "").read) }
             products = doc.css('div.a-section.a-spacing-small.s-padding-left-small.s-padding-right-small')
         end
     end

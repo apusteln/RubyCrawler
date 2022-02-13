@@ -99,16 +99,24 @@ def save_to_db(items, file_name="database.db")
     end
     table = db[:items]
     for item in items
-        table.insert(nazwa: item[0], cena: item[1], recenzje: item[2][0], ilość_recenzji: item[2][1], informacje: item[3][0], link: item[3][1])
+        table.insert(nazwa: item[0], cena: item[1], recenzje: item[2], ilość_recenzji: item[3], informacje: item[4], link: item[5])
     end
     puts "Ilość znalezionych i zapisanych pozycji: #{table.count}"
 end
 
+def with_retries(num_retries=2)
+    yield
+rescue Errno::ETIMEDOUT
+    puts "Wystąpił timeout do amazon.pl"
+    puts "Pozostałe próby: " + num_retries
+    (num_retries-=1) < 1 ? raise : retry
+end
+
 def main_crawler
     puts "Przeglądasz amazon.pl, proszę podać szukane frazy:"
-    user_input = gets.chomp.strip.split.join("+")
+    user_input = gets.chomp.force_encoding("iso-8859-1").strip.split.join("+")
     puts "Wprowadzone frazy: " + user_input
-    puts "Ile produktów chcesz zczytać? (Więcej niż 50 może powodować timeout)"
+    puts "Ile produktów chcesz zczytać? (Więcej niż 10 może powodować timeout)"
     search_count = gets.chomp
     search_count = Integer(search_count) rescue false
     while not search_count
@@ -123,7 +131,7 @@ def main_crawler
     while true
         for product in products
             product_name = get_name(product)
-            if product_name.strip.end_with?("Prześlij opinię na temat reklamy" or product_name.strip.end_with?("Prześlij opinię na temat reklamy." or product_name.strip.end_with?("produkt pasuje do Twojego zapytania."
+            if product_name.strip.end_with?("Prześlij opinię na temat reklamy") or product_name.strip.end_with?("Prześlij opinię na temat reklamy.") or product_name.strip.end_with?("produkt pasuje do Twojego zapytania.")
                 next
             end
             phrase_to_remove = "opinię na temat reklamy"
@@ -144,22 +152,21 @@ def main_crawler
             items.append([product_name, product_price, product_score, product_num_reviews, product_details, product_link])
             
             if items.length >= search_count
-                save_to_db(items)
-                byebug
-                return
+                break
             end
         end
-        if doc.at_css('a:contains("Dalej")') == nil
+        if doc.at_css('a:contains("Dalej")') == nil or items.length >= search_count
             break
         else
             url = "https://www.amazon.pl" + doc.at_css('a:contains("Dalej")')["href"]
-            doc = Nokogiri::HTML(URI.open(url, "User-Agent" => "").read)
+            doc = with_retries(2) { Nokogiri::HTML(URI.open(url, "User-Agent" => "").read) }
             products = doc.css('div.a-section.a-spacing-small.s-padding-left-small.s-padding-right-small')
         end
     end
     if items.length == 0
         puts "Nie znaleziono żadnych produktów"
     else
+	    byebug
         save_to_db(items)
     end
 end
