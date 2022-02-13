@@ -14,3 +14,13 @@ Zapisuje następujące dane:
 - Link do strony produktu
 
 Skrypt zapisze bazę danych przy pomocy sqlite3 do pliku "database.db" w folderze roboczym.
+
+Skrypt wymaga zainstalowania następujących gemów:
+- nokogiri
+- open-uri
+- sequel
+- sqlite3
+
+Skrypt znajduje się w pliku 'crawler.rb' i nie pobiera żadnych argumentów, o hasła oraz inne dane prosi promptami.
+
+`ruby ./crawler.rb`
